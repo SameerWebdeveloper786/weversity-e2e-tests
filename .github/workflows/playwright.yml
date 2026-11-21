@@ -3,6 +3,8 @@ name: WeVersity Automated QA Suite
 on:
   push:
     branches: [main, master]
+  pull_request:
+    branches: [main, master]
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
