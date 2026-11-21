@@ -61,35 +61,52 @@ test.describe('Authentication and student journey', () => {
     await passwordInput.fill(password!);
     await signInButton.click();
 
-    // WeVersity may reject headless traffic at its production reCAPTCHA
-    // endpoint. Never bypass that control; distinguish it from the legitimate
-    // optional location-permission step that follows a successful sign-in.
-    const botProtectionMessage = page.getByText(
-      /security check failed\. bots are not allowed\./i
-    );
+    // Capture WeVersity's CAPTCHA verification response. A 403 is an
+    // explicit production anti-bot rejection, not a bad-password result.
+    let captchaRejected = false;
+    page.on('response', response => {
+      const url = new URL(response.url());
+      if (
+        url.hostname === 'verify-captcha.weversity.org' &&
+        url.pathname === '/api' &&
+        response.status() === 403
+      ) {
+        captchaRejected = true;
+      }
+    });
+
     const continueWithoutLocation = page
       .getByRole('dialog')
       .getByRole('button', { name: /continue without location/i });
 
-    const postSubmitStep = await Promise.race([
-      botProtectionMessage
-        .waitFor({ state: 'visible', timeout: 8_000 })
-        .then(() => 'captcha-blocked' as const)
-        .catch(() => null),
-      continueWithoutLocation
-        .waitFor({ state: 'visible', timeout: 8_000 })
-        .then(() => 'location-permission' as const)
-        .catch(() => null),
-    ]);
+    // The successful flow can display an optional location dialog. Wait for
+    // either that dialog, a CAPTCHA rejection, or an authenticated state.
+    const authenticatedNavigation = page
+      .locator('a:visible, button:visible, [role="menuitem"]:visible')
+      .filter({
+        hasText: /^(dashboard|student dashboard|my dashboard|my courses|my learning|profile|my profile|account|my account|log out|logout|sign out)$/i,
+      })
+      .first();
 
-    if (postSubmitStep === 'captcha-blocked') {
+    await expect.poll(async () => {
+      const pathname = new URL(page.url()).pathname;
+      const authenticatedRoute = /\/(dashboard|student-dashboard|my-courses|my-learning|profile|account|student)(\/|$)/i.test(pathname);
+      const locationPromptVisible = await continueWithoutLocation.isVisible().catch(() => false);
+      const authenticatedControlVisible = await authenticatedNavigation.isVisible().catch(() => false);
+      return captchaRejected || locationPromptVisible || authenticatedRoute || authenticatedControlVisible;
+    }, {
+      timeout: 20_000,
+      message: 'After Sign In, neither WeVersity CAPTCHA verification, the optional location step, nor an authenticated account state appeared',
+    }).toBe(true);
+
+    if (captchaRejected) {
       test.skip(
         true,
-        'Production reCAPTCHA blocked automated login ("Security check failed. Bots are not allowed."). Run this journey on staging with an approved QA reCAPTCHA configuration.'
+        'WeVersity production CAPTCHA endpoint returned HTTP 403 for automated sign-in. This is anti-bot protection, not an invalid QA credential. Use staging with an approved QA CAPTCHA configuration.'
       );
     }
 
-    if (postSubmitStep === 'location-permission') {
+    if (await continueWithoutLocation.isVisible().catch(() => false)) {
       // This permission is optional; continue without sharing geolocation.
       await continueWithoutLocation.click();
     }
