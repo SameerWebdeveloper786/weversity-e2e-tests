@@ -1,28 +1,118 @@
-name: Playwright Tests
+name: WeVersity Automated QA Suite
+
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weversity-playwright-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
-    timeout-minutes: 60
+  qa-audit:
+    name: WeVersity UI and Student Journey QA
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: lts/*
-    - name: Install dependencies
-      run: npm ci
-    - name: Install Playwright Browsers
-      run: npx playwright install --with-deps
-    - name: Run Playwright tests
-      run: npx playwright test
-    - uses: actions/upload-artifact@v4
-      if: ${{ !cancelled() }}
-      with:
-        name: playwright-report
-        path: playwright-report/
-        retention-days: 30
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run WeVersity QA tests
+        id: playwright
+        continue-on-error: true
+        env:
+          BASE_URL: https://weversity.org
+          QA_STUDENT_EMAIL: ${{ secrets.QA_STUDENT_EMAIL }}
+          QA_STUDENT_PASSWORD: ${{ secrets.QA_STUDENT_PASSWORD }}
+        run: npx playwright test
+
+      - name: Generate executive QA summary
+        if: always()
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+          let report = '## WeVersity Automated QA Audit\n\n';
+          report += '**Target:** https://weversity.org  \n';
+          report += '**Run:** ' + new Date().toUTCString() + '\n\n';
+          const file = 'test-results/results.json';
+
+          if (!fs.existsSync(file)) {
+            report += '⚠️ Playwright JSON report was not generated. Check the test installation and runner logs.\n';
+          } else {
+            const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+            const counts = { passed: 0, failed: 0, skipped: 0, timedOut: 0, interrupted: 0 };
+            const failures = [];
+
+            function walk(suites) {
+              for (const suite of suites || []) {
+                for (const spec of suite.specs || []) {
+                  for (const test of spec.tests || []) {
+                    const result = test.results?.[test.results.length - 1];
+                    const status = result?.status || 'interrupted';
+                    if (Object.hasOwn(counts, status)) counts[status]++;
+                    else counts.interrupted++;
+                    if (status !== 'passed' && status !== 'skipped') {
+                      const message = (result?.error?.message || status).replace(/\s+/g, ' ').slice(0, 350);
+                      failures.push({ title: spec.title, project: test.projectName || 'unknown', message });
+                    }
+                  }
+                }
+                walk(suite.suites);
+              }
+            }
+            walk(data.suites);
+
+            report += '| Result | Count |\n|---|---:|\n';
+            for (const [name, count] of Object.entries(counts)) report += '| ' + name + ' | ' + count + ' |\n';
+            report += '\n';
+
+            if (failures.length) {
+              report += '### Failed checks\n\n| Test | Project | Details |\n|---|---|---|\n';
+              for (const item of failures) {
+                report += '| ' + item.title.replace(/\|/g, '/') + ' | ' + item.project.replace(/\|/g, '/') + ' | ' + item.message.replace(/\|/g, '/') + ' |\n';
+              }
+            } else {
+              report += '### No failed checks recorded\n';
+            }
+
+            if (counts.skipped) {
+              report += '\n> Skipped tests are not counted as passed. The real student login test is skipped until QA account secrets are configured.\n';
+            }
+          }
+
+          fs.appendFileSync(summaryFile, report);
+          NODE
+
+      - name: Upload Playwright report, screenshots, videos and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weversity-playwright-evidence
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Mark workflow failed when QA checks fail
+        if: steps.playwright.outcome == 'failure'
+        run: exit 1
