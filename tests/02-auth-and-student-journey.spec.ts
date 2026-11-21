@@ -111,15 +111,7 @@ test.describe('Authentication and student journey', () => {
       await continueWithoutLocation.click();
     }
 
-    // Check visible authenticated UI or a known account route. Do not inspect
-    // body text because hidden login-panel content can produce false matches.
-    const authenticatedNavigation = page
-      .locator('a:visible, button:visible, [role="menuitem"]:visible')
-      .filter({
-        hasText: /^(dashboard|student dashboard|my dashboard|my courses|my learning|profile|my profile|account|my account|log out|logout|sign out)$/i,
-      })
-      .first();
-
+    // Verify the authenticated state after the optional permission step.
     await expect.poll(async () => {
       const pathname = new URL(page.url()).pathname;
       const authenticatedRoute = /\/(dashboard|student-dashboard|my-courses|my-learning|profile|account|student)(\/|$)/i.test(pathname);
