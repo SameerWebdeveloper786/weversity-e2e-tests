@@ -59,7 +59,6 @@ test.describe('Authentication and student journey', () => {
 
     await emailInput.fill(email!);
     await passwordInput.fill(password!);
-    await signInButton.click();
 
     // Capture WeVersity's CAPTCHA verification response at browser-context
     // level because the verification request may originate inside an iframe.
@@ -74,6 +73,8 @@ test.describe('Authentication and student journey', () => {
         captchaRejected = true;
       }
     });
+
+    await signInButton.click();
 
     const botProtectionMessage = page.getByText(/security check failed\. bots are not allowed\./i);
     const continueWithoutLocation = page
