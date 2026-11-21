@@ -68,7 +68,12 @@ test.describe('Authentication and student journey', () => {
     const botProtectionMessage = page.getByText(
       /security check failed\. bots are not allowed\./i
     );
-    if (await botProtectionMessage.isVisible({ timeout: 8_000 }).catch(() => false)) {
+    const botProtectionBlocked = await botProtectionMessage
+      .waitFor({ state: 'visible', timeout: 8_000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (botProtectionBlocked) {
       test.skip(
         true,
         'Production reCAPTCHA blocked automated login ("Security check failed. Bots are not allowed."). Run this journey on staging with an approved QA reCAPTCHA configuration.'
