@@ -45,63 +45,53 @@ test.describe('Authentication and student journey', () => {
     const password = process.env.QA_STUDENT_PASSWORD;
     test.skip(!email || !password, 'Not run: configure QA_STUDENT_EMAIL and QA_STUDENT_PASSWORD repository secrets.');
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    // The current WeVersity header points directly to /login.
+    const response = await page.goto('/login', { waitUntil: 'domcontentloaded' });
+    expect(response?.status(), 'WeVersity login page did not load successfully').toBeLessThan(400);
 
-    // WeVersity opens the sign-in panel from the header; scope the fields to
-    // the form that actually contains the email and password controls.
-    const signInLink = page.getByRole('link', { name: /^(sign in|log in|login)$/i }).first();
-    await expect(signInLink, 'WeVersity header sign-in link was not visible').toBeVisible();
-    await signInLink.click();
+    const emailInput = page.getByRole('textbox', { name: /^email address$/i });
+    const passwordInput = page.getByRole('textbox', { name: /^password$/i });
+    const signInButton = page.getByRole('button', { name: /^sign in$/i });
 
-    const signInForm = page.locator('form').filter({
-      has: page.locator('input[type="email"]'),
-    }).filter({
-      has: page.locator('input[type="password"]'),
-    }).first();
+    await expect(emailInput, 'Email Address field was not visible on /login').toBeVisible();
+    await expect(passwordInput, 'Password field was not visible on /login').toBeVisible();
+    await expect(signInButton, 'Sign In button was not visible on /login').toBeVisible();
 
-    await expect(signInForm, 'Sign-in form with email and password fields did not open').toBeVisible();
-
-    const emailInput = signInForm.locator('input[type="email"]').first();
-    const passwordInput = signInForm.locator('input[type="password"]').first();
     await emailInput.fill(email!);
     await passwordInput.fill(password!);
+    await signInButton.click();
 
-    // Use the visible WeVersity "Sign In" action instead of assuming that
-    // the first submit control on the page belongs to the login form.
-    const signInButton = signInForm.getByRole('button', { name: /^sign in$/i });
-    if (await signInButton.isVisible().catch(() => false)) {
-      await signInButton.click();
-    } else {
-      await signInForm.locator('button[type="submit"], input[type="submit"]').first().click();
+    // WeVersity's production reCAPTCHA explicitly rejects automated sign-ins.
+    // Do not try to bypass the security control; report this as an environment
+    // limitation so the real account journey can be exercised on staging with
+    // an approved QA reCAPTCHA configuration.
+    const botProtectionMessage = page.getByText(
+      /security check failed\. bots are not allowed\./i
+    );
+    if (await botProtectionMessage.isVisible({ timeout: 8_000 }).catch(() => false)) {
+      test.skip(
+        true,
+        'Production reCAPTCHA blocked automated login ("Security check failed. Bots are not allowed."). Run this journey on staging with an approved QA reCAPTCHA configuration.'
+      );
     }
 
-    // A successful sign-in may show WeVersity's optional location-permission
-    // step. It is not required for authentication, so continue without it.
-    const continueWithoutLocation = page
-      .locator('button, a, [role="button"]')
-      .filter({ hasText: /continue without location/i })
-      .first();
-
-    if (await continueWithoutLocation.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await continueWithoutLocation.click();
-    }
-
-    // The sign-in panel can remain mounted in the DOM while hidden. Check
-    // visible account navigation or a known authenticated route, not body
-    // text (which also includes hidden modal content).
+    // Check visible authenticated UI or a known account route. Do not inspect
+    // body text because hidden login-panel content can produce false matches.
     const authenticatedNavigation = page
       .locator('a:visible, button:visible, [role="menuitem"]:visible')
-      .filter({ hasText: /^(dashboard|my courses|my learning|profile|account|log out|logout|sign out)$/i })
+      .filter({
+        hasText: /^(dashboard|student dashboard|my dashboard|my courses|my learning|profile|my profile|account|my account|log out|logout|sign out)$/i,
+      })
       .first();
 
     await expect.poll(async () => {
       const pathname = new URL(page.url()).pathname;
-      const authenticatedRoute = /\/(dashboard|student-dashboard|my-courses|my-learning|profile|account)(\/|$)/i.test(pathname);
+      const authenticatedRoute = /\/(dashboard|student-dashboard|my-courses|my-learning|profile|account|student)(\/|$)/i.test(pathname);
       const visibleAccountControl = await authenticatedNavigation.isVisible().catch(() => false);
       return authenticatedRoute || visibleAccountControl;
     }, {
       timeout: 30_000,
-      message: 'Sign-in did not reach a visible authenticated account area after handling the optional location step',
+      message: 'Sign In was submitted, but no visible authenticated account navigation or account route appeared. Check the on-page login error before treating this as a credential issue.',
     }).toBe(true);
   });
 });
