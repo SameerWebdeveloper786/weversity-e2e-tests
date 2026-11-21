@@ -43,21 +43,101 @@ test.describe('Authentication and student journey', () => {
 
     const email = process.env.QA_STUDENT_EMAIL;
     const password = process.env.QA_STUDENT_PASSWORD;
+    test.skip(!email || !password, 'Not run: configure QA_STUDENT_EMAIL and QA_STUDENT_PASSWORD repository secrets.');
 
-    test.skip(!email || !password, 'Not run: configure QA_STUDENT_EMAIL and QA_STUDENT_PASSWORD repository secrets to enable the real student journey.');
+    // The current WeVersity header points directly to /login.
+    const response = await page.goto('/login', { waitUntil: 'domcontentloaded' });
+    expect(response?.status(), 'WeVersity login page did not load successfully').toBeLessThan(400);
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
-    const loginLink = page.getByRole('link', { name: /log in|login|sign in/i }).first();
-    await expect(loginLink, 'A visible Login/Sign in link was not found').toBeVisible();
-    await loginLink.click();
+    const emailInput = page.getByRole('textbox', { name: /^email address$/i });
+    const passwordInput = page.getByRole('textbox', { name: /^password$/i });
+    const signInButton = page.getByRole('button', { name: /^sign in$/i });
 
-    await page.locator('input[type="email"]').first().fill(email!);
-    await page.locator('input[type="password"]').first().fill(password!);
-    await page.locator('button[type="submit"], input[type="submit"]').first().click();
+    await expect(emailInput, 'Email Address field was not visible on /login').toBeVisible();
+    await expect(passwordInput, 'Password field was not visible on /login').toBeVisible();
+    await expect(signInButton, 'Sign In button was not visible on /login').toBeVisible();
 
-    await expect(
-      page.locator('body'),
-      'Login completed without an authenticated dashboard/profile indicator'
-    ).toContainText(/dashboard|my courses|logout|log out|sign out|profile/i, { timeout: 25_000 });
+    await emailInput.fill(email!);
+    await passwordInput.fill(password!);
+
+    // Capture WeVersity's CAPTCHA verification response at browser-context
+    // level because the verification request may originate inside an iframe.
+    let captchaRejected = false;
+    page.context().on('response', response => {
+      const url = new URL(response.url());
+      if (
+        url.hostname === 'verify-captcha.weversity.org' &&
+        url.pathname === '/api' &&
+        response.status() === 403
+      ) {
+        captchaRejected = true;
+      }
+    });
+
+    await signInButton.click();
+
+    const botProtectionMessage = page.getByText(/security check failed\. bots are not allowed\./i);
+    const continueWithoutLocation = page
+      .getByRole('dialog')
+      .getByRole('button', { name: /continue without location/i });
+
+    const authenticatedNavigation = page
+      .locator('a:visible, button:visible, [role="menuitem"]:visible')
+      .filter({
+        hasText: /^(dashboard|student dashboard|my dashboard|my courses|my learning|profile|my profile|account|my account|log out|logout|sign out)$/i,
+      })
+      .first();
+
+    const isAuthenticated = async () => {
+      const pathname = new URL(page.url()).pathname;
+      const authenticatedRoute = /\/(dashboard|student-dashboard|my-courses|my-learning|profile|account|student)(\/|$)/i.test(pathname);
+      const visibleAccountControl = await authenticatedNavigation.isVisible().catch(() => false);
+      return authenticatedRoute || visibleAccountControl;
+    };
+
+    // First, identify which post-submit step WeVersity presents.
+    await expect.poll(async () => {
+      const botMessageVisible = await botProtectionMessage.isVisible().catch(() => false);
+      const locationPromptVisible = await continueWithoutLocation.isVisible().catch(() => false);
+      return captchaRejected || botMessageVisible || locationPromptVisible || await isAuthenticated();
+    }, {
+      timeout: 20_000,
+      message: 'After Sign In, WeVersity did not show a CAPTCHA result, location-permission step, or authenticated account state',
+    }).toBe(true);
+
+    if (captchaRejected || await botProtectionMessage.isVisible().catch(() => false)) {
+      test.skip(
+        true,
+        'WeVersity production CAPTCHA rejected automated sign-in ("Security check failed. Bots are not allowed."). This is anti-bot protection, not an invalid QA credential. Use staging with an approved QA CAPTCHA configuration.'
+      );
+    }
+
+    if (await continueWithoutLocation.isVisible().catch(() => false)) {
+      // This permission is optional. Continue without sharing geolocation;
+      // WeVersity performs the next authentication/security step afterwards.
+      await continueWithoutLocation.click();
+    }
+
+    // CAPTCHA verification may only finish after the optional location step.
+    // Check for its rejection before treating the remaining page as a login bug.
+    await expect.poll(async () => {
+      const botMessageVisible = await botProtectionMessage.isVisible().catch(() => false);
+      return captchaRejected || botMessageVisible || await isAuthenticated();
+    }, {
+      timeout: 25_000,
+      message: 'After the optional location step, WeVersity did not confirm authentication or report a CAPTCHA rejection',
+    }).toBe(true);
+
+    if (captchaRejected || await botProtectionMessage.isVisible().catch(() => false)) {
+      test.skip(
+        true,
+        'WeVersity production CAPTCHA rejected automated sign-in ("Security check failed. Bots are not allowed."). This is anti-bot protection, not an invalid QA credential. Use staging with an approved QA CAPTCHA configuration.'
+      );
+    }
+
+    await expect.poll(isAuthenticated, {
+      timeout: 10_000,
+      message: 'WeVersity completed the security step but no visible authenticated account navigation or account route appeared',
+    }).toBe(true);
   });
 });
