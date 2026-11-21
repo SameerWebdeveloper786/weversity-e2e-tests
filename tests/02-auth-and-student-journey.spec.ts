@@ -61,23 +61,37 @@ test.describe('Authentication and student journey', () => {
     await passwordInput.fill(password!);
     await signInButton.click();
 
-    // WeVersity's production reCAPTCHA explicitly rejects automated sign-ins.
-    // Do not try to bypass the security control; report this as an environment
-    // limitation so the real account journey can be exercised on staging with
-    // an approved QA reCAPTCHA configuration.
+    // WeVersity may reject headless traffic at its production reCAPTCHA
+    // endpoint. Never bypass that control; distinguish it from the legitimate
+    // optional location-permission step that follows a successful sign-in.
     const botProtectionMessage = page.getByText(
       /security check failed\. bots are not allowed\./i
     );
-    const botProtectionBlocked = await botProtectionMessage
-      .waitFor({ state: 'visible', timeout: 8_000 })
-      .then(() => true)
-      .catch(() => false);
+    const continueWithoutLocation = page
+      .getByRole('dialog')
+      .getByRole('button', { name: /continue without location/i });
 
-    if (botProtectionBlocked) {
+    const postSubmitStep = await Promise.race([
+      botProtectionMessage
+        .waitFor({ state: 'visible', timeout: 8_000 })
+        .then(() => 'captcha-blocked' as const)
+        .catch(() => null),
+      continueWithoutLocation
+        .waitFor({ state: 'visible', timeout: 8_000 })
+        .then(() => 'location-permission' as const)
+        .catch(() => null),
+    ]);
+
+    if (postSubmitStep === 'captcha-blocked') {
       test.skip(
         true,
         'Production reCAPTCHA blocked automated login ("Security check failed. Bots are not allowed."). Run this journey on staging with an approved QA reCAPTCHA configuration.'
       );
+    }
+
+    if (postSubmitStep === 'location-permission') {
+      // This permission is optional; continue without sharing geolocation.
+      await continueWithoutLocation.click();
     }
 
     // Check visible authenticated UI or a known account route. Do not inspect
