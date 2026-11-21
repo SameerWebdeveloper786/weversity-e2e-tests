@@ -43,21 +43,65 @@ test.describe('Authentication and student journey', () => {
 
     const email = process.env.QA_STUDENT_EMAIL;
     const password = process.env.QA_STUDENT_PASSWORD;
-
-    test.skip(!email || !password, 'Not run: configure QA_STUDENT_EMAIL and QA_STUDENT_PASSWORD repository secrets to enable the real student journey.');
+    test.skip(!email || !password, 'Not run: configure QA_STUDENT_EMAIL and QA_STUDENT_PASSWORD repository secrets.');
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
-    const loginLink = page.getByRole('link', { name: /log in|login|sign in/i }).first();
-    await expect(loginLink, 'A visible Login/Sign in link was not found').toBeVisible();
-    await loginLink.click();
 
-    await page.locator('input[type="email"]').first().fill(email!);
-    await page.locator('input[type="password"]').first().fill(password!);
-    await page.locator('button[type="submit"], input[type="submit"]').first().click();
+    // WeVersity opens the sign-in panel from the header; scope the fields to
+    // the form that actually contains the email and password controls.
+    const signInLink = page.getByRole('link', { name: /^(sign in|log in|login)$/i }).first();
+    await expect(signInLink, 'WeVersity header sign-in link was not visible').toBeVisible();
+    await signInLink.click();
 
-    await expect(
-      page.locator('body'),
-      'Login completed without an authenticated dashboard/profile indicator'
-    ).toContainText(/dashboard|my courses|logout|log out|sign out|profile/i, { timeout: 25_000 });
+    const signInForm = page.locator('form').filter({
+      has: page.locator('input[type="email"]'),
+    }).filter({
+      has: page.locator('input[type="password"]'),
+    }).first();
+
+    await expect(signInForm, 'Sign-in form with email and password fields did not open').toBeVisible();
+
+    const emailInput = signInForm.locator('input[type="email"]').first();
+    const passwordInput = signInForm.locator('input[type="password"]').first();
+    await emailInput.fill(email!);
+    await passwordInput.fill(password!);
+
+    // Use the visible WeVersity "Sign In" action instead of assuming that
+    // the first submit control on the page belongs to the login form.
+    const signInButton = signInForm.getByRole('button', { name: /^sign in$/i });
+    if (await signInButton.isVisible().catch(() => false)) {
+      await signInButton.click();
+    } else {
+      await signInForm.locator('button[type="submit"], input[type="submit"]').first().click();
+    }
+
+    // A successful sign-in may show WeVersity's optional location-permission
+    // step. It is not required for authentication, so continue without it.
+    const continueWithoutLocation = page
+      .locator('button, a, [role="button"]')
+      .filter({ hasText: /continue without location/i })
+      .first();
+
+    if (await continueWithoutLocation.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await continueWithoutLocation.click();
+    }
+
+    // The sign-in panel can remain mounted in the DOM while hidden. Check
+    // visible account navigation or a known authenticated route, not body
+    // text (which also includes hidden modal content).
+    const authenticatedNavigation = page
+      .locator('a:visible, button:visible, [role="menuitem"]:visible')
+      .filter({ hasText: /^(dashboard|my courses|my learning|profile|account|log out|logout|sign out)$/i })
+      .first();
+
+    await expect.poll(async () => {
+      const pathname = new URL(page.url()).pathname;
+      const authenticatedRoute = /\/(dashboard|student-dashboard|my-courses|my-learning|profile|account)(\/|$)/i.test(pathname);
+      const visibleAccountControl = await authenticatedNavigation.isVisible().catch(() => false);
+      return authenticatedRoute || visibleAccountControl;
+    }, {
+      timeout: 30_000,
+      message: 'Sign-in did not reach a visible authenticated account area after handling the optional location step',
+    }).toBe(true);
   });
 });
