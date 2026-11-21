@@ -19,7 +19,7 @@ test.describe('Site crawl and UI health', () => {
       anchors.map(anchor => (anchor as HTMLAnchorElement).href)
     );
 
-    const base = new URL(testInfo.project.use.baseURL as string || 'https://weversity.org');
+    const base = new URL(process.env.BASE_URL || 'https://weversity.org');
     const internalUrls = [...new Set(hrefs)]
       .filter(href => {
         try {
