@@ -61,10 +61,10 @@ test.describe('Authentication and student journey', () => {
     await passwordInput.fill(password!);
     await signInButton.click();
 
-    // Capture WeVersity's CAPTCHA verification response. A 403 is an
-    // explicit production anti-bot rejection, not a bad-password result.
+    // Capture WeVersity's CAPTCHA verification response at browser-context
+    // level because the verification request may originate inside an iframe.
     let captchaRejected = false;
-    page.on('response', response => {
+    page.context().on('response', response => {
       const url = new URL(response.url());
       if (
         url.hostname === 'verify-captcha.weversity.org' &&
@@ -75,12 +75,13 @@ test.describe('Authentication and student journey', () => {
       }
     });
 
+    const botProtectionMessage = page.getByText(/security check failed\. bots are not allowed\./i);
     const continueWithoutLocation = page
       .getByRole('dialog')
       .getByRole('button', { name: /continue without location/i });
 
     // The successful flow can display an optional location dialog. Wait for
-    // either that dialog, a CAPTCHA rejection, or an authenticated state.
+    // either that dialog, an anti-bot rejection, or authenticated navigation.
     const authenticatedNavigation = page
       .locator('a:visible, button:visible, [role="menuitem"]:visible')
       .filter({
@@ -93,16 +94,17 @@ test.describe('Authentication and student journey', () => {
       const authenticatedRoute = /\/(dashboard|student-dashboard|my-courses|my-learning|profile|account|student)(\/|$)/i.test(pathname);
       const locationPromptVisible = await continueWithoutLocation.isVisible().catch(() => false);
       const authenticatedControlVisible = await authenticatedNavigation.isVisible().catch(() => false);
-      return captchaRejected || locationPromptVisible || authenticatedRoute || authenticatedControlVisible;
+      const botMessageVisible = await botProtectionMessage.isVisible().catch(() => false);
+      return captchaRejected || botMessageVisible || locationPromptVisible || authenticatedRoute || authenticatedControlVisible;
     }, {
-      timeout: 20_000,
-      message: 'After Sign In, neither WeVersity CAPTCHA verification, the optional location step, nor an authenticated account state appeared',
+      timeout: 30_000,
+      message: 'After Sign In, neither a CAPTCHA result, the optional location step, nor authenticated account navigation appeared',
     }).toBe(true);
 
-    if (captchaRejected) {
+    if (captchaRejected || await botProtectionMessage.isVisible().catch(() => false)) {
       test.skip(
         true,
-        'WeVersity production CAPTCHA endpoint returned HTTP 403 for automated sign-in. This is anti-bot protection, not an invalid QA credential. Use staging with an approved QA CAPTCHA configuration.'
+        'WeVersity production CAPTCHA rejected automated sign-in ("Security check failed. Bots are not allowed."). This is anti-bot protection, not an invalid QA credential. Use staging with an approved QA CAPTCHA configuration.'
       );
     }
 
