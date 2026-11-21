@@ -81,8 +81,6 @@ test.describe('Authentication and student journey', () => {
       .getByRole('dialog')
       .getByRole('button', { name: /continue without location/i });
 
-    // The successful flow can display an optional location dialog. Wait for
-    // either that dialog, an anti-bot rejection, or authenticated navigation.
     const authenticatedNavigation = page
       .locator('a:visible, button:visible, [role="menuitem"]:visible')
       .filter({
@@ -90,16 +88,21 @@ test.describe('Authentication and student journey', () => {
       })
       .first();
 
-    await expect.poll(async () => {
+    const isAuthenticated = async () => {
       const pathname = new URL(page.url()).pathname;
       const authenticatedRoute = /\/(dashboard|student-dashboard|my-courses|my-learning|profile|account|student)(\/|$)/i.test(pathname);
-      const locationPromptVisible = await continueWithoutLocation.isVisible().catch(() => false);
-      const authenticatedControlVisible = await authenticatedNavigation.isVisible().catch(() => false);
+      const visibleAccountControl = await authenticatedNavigation.isVisible().catch(() => false);
+      return authenticatedRoute || visibleAccountControl;
+    };
+
+    // First, identify which post-submit step WeVersity presents.
+    await expect.poll(async () => {
       const botMessageVisible = await botProtectionMessage.isVisible().catch(() => false);
-      return captchaRejected || botMessageVisible || locationPromptVisible || authenticatedRoute || authenticatedControlVisible;
+      const locationPromptVisible = await continueWithoutLocation.isVisible().catch(() => false);
+      return captchaRejected || botMessageVisible || locationPromptVisible || await isAuthenticated();
     }, {
-      timeout: 30_000,
-      message: 'After Sign In, neither a CAPTCHA result, the optional location step, nor authenticated account navigation appeared',
+      timeout: 20_000,
+      message: 'After Sign In, WeVersity did not show a CAPTCHA result, location-permission step, or authenticated account state',
     }).toBe(true);
 
     if (captchaRejected || await botProtectionMessage.isVisible().catch(() => false)) {
@@ -110,19 +113,31 @@ test.describe('Authentication and student journey', () => {
     }
 
     if (await continueWithoutLocation.isVisible().catch(() => false)) {
-      // This permission is optional; continue without sharing geolocation.
+      // This permission is optional. Continue without sharing geolocation;
+      // WeVersity performs the next authentication/security step afterwards.
       await continueWithoutLocation.click();
     }
 
-    // Verify the authenticated state after the optional permission step.
+    // CAPTCHA verification may only finish after the optional location step.
+    // Check for its rejection before treating the remaining page as a login bug.
     await expect.poll(async () => {
-      const pathname = new URL(page.url()).pathname;
-      const authenticatedRoute = /\/(dashboard|student-dashboard|my-courses|my-learning|profile|account|student)(\/|$)/i.test(pathname);
-      const visibleAccountControl = await authenticatedNavigation.isVisible().catch(() => false);
-      return authenticatedRoute || visibleAccountControl;
+      const botMessageVisible = await botProtectionMessage.isVisible().catch(() => false);
+      return captchaRejected || botMessageVisible || await isAuthenticated();
     }, {
-      timeout: 30_000,
-      message: 'Sign In was submitted, but no visible authenticated account navigation or account route appeared. Check the on-page login error before treating this as a credential issue.',
+      timeout: 25_000,
+      message: 'After the optional location step, WeVersity did not confirm authentication or report a CAPTCHA rejection',
+    }).toBe(true);
+
+    if (captchaRejected || await botProtectionMessage.isVisible().catch(() => false)) {
+      test.skip(
+        true,
+        'WeVersity production CAPTCHA rejected automated sign-in ("Security check failed. Bots are not allowed."). This is anti-bot protection, not an invalid QA credential. Use staging with an approved QA CAPTCHA configuration.'
+      );
+    }
+
+    await expect.poll(isAuthenticated, {
+      timeout: 10_000,
+      message: 'WeVersity completed the security step but no visible authenticated account navigation or account route appeared',
     }).toBe(true);
   });
 });
